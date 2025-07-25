@@ -1,0 +1,77 @@
+# Python
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Byte-code files
+*.pyc
+__pycache__/
+*.so
+*.pyd
+
+# Jupyter Notebook files
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+# Temporary files created by Jupyter
+.fuse_hidden*
+.conda/
+
+# IDE specific files
+.idea/                  # IntelliJ IDEA / PyCharm
+.vscode/                # VS Code (if you have local settings)
+*.iml                   # IntelliJ IDEA module file
+*.iws                   # IntelliJ IDEA workspace file
+*.ipr                   # IntelliJ IDEA project file
+.DS_Store               # macOS specific
+.Trash/                 # macOS temporary trash
+
+# Data directories (CRITICAL: Do NOT commit large data files!)
+# Raw data should ideally be downloaded/generated, not version controlled.
+# Interim and processed data are derivatives and should also be excluded.
+data/raw/
+data/interim/
+data/processed/
+
+# Model artifacts (trained models)
+# Models can be very large and should generally be stored in a dedicated model registry or object storage (e.g., S3).
+src/models/*.pkl
+src/models/*.h5
+src/models/*.pth
+src/models/*.pt
+src/models/*.joblib
+src/models/*.onnx
+models/                 # If you decide to store models outside src/models
+
+# Logs
+*.log
+logs/                   # If you create a separate logs directory
+
+# Reports, plots, images
+reports/*.html
+reports/*.pdf
+reports/*.png
+reports/*.jpg
+reports/*.svg
+app/static/plots/       # If your app generates plots
+
+# Sensitive information (e.g., API keys, credentials)
+# It's best practice to use environment variables for these, but if you have
+# local config files, exclude them.
+.env
+config.ini
+config.py
+credentials.json
+secrets.py
+
+# Build/distribution files
+dist/
+build/
+*.egg-info/
+.coverage
+.pytest_cache/
+
+# System specific files
+Thumbs.db   # Windows image thumbnail cache
+.DS_Store   # macOS system file
