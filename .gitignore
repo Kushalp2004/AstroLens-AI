@@ -1,3 +1,4 @@
+
 # Python
 # Virtual environment
 venv/
@@ -75,3 +76,4 @@ build/
 # System specific files
 Thumbs.db   # Windows image thumbnail cache
 .DS_Store   # macOS system file
+
