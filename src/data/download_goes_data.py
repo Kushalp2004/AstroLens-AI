@@ -22,4 +22,4 @@ def download_goes_xrs(start_date: str, end_date: str, output_dir: str):
         return []
 
 if __name__ == "__main__":
-    download_goes_xrs("2012-01-01", "2025-07-24", "data/raw/goes_xrs/")
+    download_goes_xrs("2012-01-01", "2025-07-26", "data/raw/goes_xrs/")

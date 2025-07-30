@@ -1,7 +1,9 @@
-numpy==2.3.2
-pandas==2.3.1
-matplotlib==3.10.3
-seaborn==0.13.2
-scikit-learn==1.7.1
-sunpy==7.0.0
-netCDF4==1.7.2
+sunpy[all]~=6.0
+pandas~=2.2
+numpy~=1.26
+scipy~=1.13
+scikit-learn~=1.5
+matplotlib~=3.9
+seaborn~=0.13
+tqdm~=4.66
+jupyter~=1.0
