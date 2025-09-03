@@ -1,85 +1,65 @@
-# src/data/create_features_labels.py
-
+# src/data/process_flux_data.py
 import os
+import glob
 import pandas as pd
+import xarray as xr
 import numpy as np
+from tqdm import tqdm
+import argparse
 
-# --- Configuration ---
-CONFIG = {
-    "prediction_window": "60min",     # Look ahead 60 minutes for a flare
-    "flux_path": "data/interim/goes_xrs_flux_log.parquet",
-    "flare_path": "data/interim/flare_catalogue_combined.parquet",
-    "output_dir": "data/processed",
-    "rolling_windows": ["15min", "30min", "60min", "180min"]
-}
+POSSIBLE_VAR_NAMES = ["xrsb_flux", "xrsb", "flux"]
 
-def load_data(flux_path, flare_path):
-    """Loads the interim flux and flare parquet files."""
-    print("🔍 Loading interim flux and flare data...")
-    if not os.path.exists(flux_path) or not os.path.exists(flare_path):
-        raise FileNotFoundError("Interim data not found. Please run previous scripts first.")
-        
-    flux_df = pd.read_parquet(flux_path)
-    flare_df = pd.read_parquet(flare_path)
+def find_flux_variable(dataset):
+    for name in POSSIBLE_VAR_NAMES:
+        if name in dataset.variables: return name
+    return None
 
-    flux_df.index = pd.to_datetime(flux_df.index)
-    flare_df["datetime"] = pd.to_datetime(flare_df["datetime"])
-    
-    return flux_df.sort_index(), flare_df
+def process_single_netcdf(file_path):
+    try:
+        with xr.open_dataset(file_path) as ds:
+            var_name = find_flux_variable(ds)
+            if var_name is None:
+                print(f"[WARN] No valid flux variable in {os.path.basename(file_path)}. Skipping.")
+                return None
+            df = ds[var_name].to_dataframe().rename(columns={var_name: "flux"})
+            return df[~df.index.duplicated(keep='first')]
+    except Exception as e:
+        print(f"[ERROR] Failed to process {os.path.basename(file_path)}: {e}")
+        return None
 
-def create_features(df, windows):
-    """Engineers time-series features efficiently using pandas rolling windows."""
-    print("🛠️  Creating features...")
-    for win in windows:
-        df[f"roll_mean_{win}"] = df["flux_log"].rolling(win, min_periods=1).mean()
-        df[f"roll_std_{win}"] = df["flux_log"].rolling(win, min_periods=1).std()
-        df[f"roll_max_{win}"] = df["flux_log"].rolling(win, min_periods=1).max()
-        df[f"delta_{win}"] = df["flux_log"].diff(int(pd.to_timedelta(win).total_seconds() // 60))
+def main(root_dir):
+    RAW_DIR = os.path.join(root_dir, "data/raw/goes_xrs/")
+    OUTPUT_PATH = os.path.join(root_dir, "data/interim/goes_xrs_flux_log.parquet")
 
-    df["hour"] = df.index.hour
-    df["day_of_year"] = df.index.dayofyear
-    
-    return df.dropna()
+    all_files = sorted(glob.glob(os.path.join(RAW_DIR, "*.nc")))
+    if not all_files:
+        print(f"❌ No .nc files found in '{RAW_DIR}'.")
+        return
 
-def create_labels(flux_df, flare_df, window):
-    """Creates labels by checking for the max flare class in a future window."""
-    print("🏷️  Creating labels...")
-    flare_map = {'X': 4, 'M': 3, 'C': 2, 'B': 1, 'A': 1}
-    flare_df['label'] = flare_df['class'].str[0].map(flare_map).fillna(0)
-    
-    flare_events = pd.Series(flare_df['label'].values, index=flare_df['datetime'])
-    # Align flare events to the flux timeline
-    flare_events_aligned = flare_events.reindex(flux_df.index).fillna(0)
+    print(f"📦 Found {len(all_files)} files. Processing...")
+    successful_dfs = [df for f in tqdm(all_files) if (df := process_single_netcdf(f)) is not None and not df.empty]
 
-    # Use rolling().max() on a reversed series to look into the future efficiently
-    labels = flare_events_aligned.iloc[::-1].rolling(window).max().iloc[::-1].fillna(0)
-    
-    return labels.astype(int)
+    if not successful_dfs:
+        print("❌ No data could be processed.")
+        return
 
-def main():
-    """Main pipeline function to generate the final dataset."""
-    flux_df, flare_df = load_data(CONFIG["flux_path"], CONFIG["flare_path"])
+    print("🧩 Merging data...")
+    full_df = pd.concat(successful_dfs).sort_index()
+    full_df = full_df[~full_df.index.duplicated(keep='first')]
+
+    print("📊 Resampling and interpolating...")
+    # FIX: Add back interpolation to handle small gaps in data
+    flux_df = full_df.resample("1min").mean().interpolate(method='time', limit_direction='both', limit=5)
     
-    featured_df = create_features(flux_df, CONFIG["rolling_windows"])
-    
-    labels = create_labels(featured_df, flare_df, CONFIG["prediction_window"])
-    
-    # Combine features and labels into a single DataFrame
-    featured_df['label'] = labels
-    
-    final_df = featured_df.dropna()
-    
-    # --- Save Final Processed DataFrame ---
-    output_dir = CONFIG["output_dir"]
-    output_path = os.path.join(output_dir, "features_and_labels.parquet")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    final_df.to_parquet(output_path)
-    
-    print(f"\n[✓] Final feature dataset created. Shape: {final_df.shape}")
-    print(f"📁 Saved final dataset to '{output_path}'")
-    print("\nClass distribution:")
-    print(final_df["label"].value_counts(normalize=True).round(4))
+    flux_df["flux_log"] = np.log10(flux_df["flux"].clip(lower=1e-10))
+    final_df = flux_df[["flux_log"]].dropna()
+
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    final_df.to_parquet(OUTPUT_PATH)
+    print(f"[✓] Saved cleaned flux log to: {OUTPUT_PATH} ({len(final_df)} rows)")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Process raw GOES NetCDF data.")
+    parser.add_argument("--root_dir", type=str, required=True, help="Root directory of the project.")
+    args = parser.parse_args()
+    main(args.root_dir)

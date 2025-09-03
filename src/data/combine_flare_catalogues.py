@@ -1,5 +1,4 @@
 # src/data/combine_flare_catalogues.py
-
 import os
 import glob
 import pandas as pd
@@ -7,74 +6,82 @@ from datetime import datetime, timedelta
 import re
 import argparse
 
-NOAA_DIR = "data/raw/flare_catalogue/"
-HEK_FILE = "data/raw/flare_catalogue/goes_flare_catalogue_fido_hek.csv"
-OUTPUT_PATH = "data/interim/flare_catalogue_combined.parquet"
-
-def get_year_from_filename(file_path):
-    fname = os.path.basename(file_path)
-    match = re.search(r'(\d{4})', fname)
-    return int(match.group(1)) if match else None
-
-def parse_standard_noaa_txt(file_path, verbose=False):
-    # This function appears to be working well based on your logs, so we'll keep it.
+def parse_noaa_txt_robust(file_path, verbose=False):
+    """A robust parser for fixed-width and inconsistently spaced NOAA files."""
     flare_events = []
-    file_year = get_year_from_filename(file_path)
-    if file_year is None:
-        return pd.DataFrame()
-
-    classification_pattern = re.compile(r'([ABCMX]\s*\d+\.?\d*)')
+    fname = os.path.basename(file_path)
+    year_match = re.search(r'(\d{4})', fname)
+    if not year_match: return pd.DataFrame()
+    file_year = int(year_match.group(1))
+    
     with open(file_path, "r") as f:
-        for line in f:
-            line = line.replace('\xa0', ' ')
-            if not line.strip().startswith("31777") or len(line) < 27:
-                continue
+        for i, line in enumerate(f):
+            line = line.replace('\xa0', ' ').strip()
+            if not line or not line.startswith(('31777', '1', '2', '3', '4', '5', '6', '7', '8', '9')): continue
+            
             try:
-                yy_str, ddd_str = line[5:7].strip(), line[7:10].strip()
-                peak_time_str_raw = line[18:22].strip()
-                if not (yy_str.isdigit() and ddd_str.isdigit()): continue
-                
-                event_date = datetime(file_year, 1, 1) + timedelta(days=int(ddd_str) - 1)
-                peak_time_str = ''.join(filter(str.isdigit, peak_time_str_raw))
-                if len(peak_time_str) != 4: continue
+                parts = line.split()
+                if len(parts) < 6: continue
 
-                peak_dt = datetime(event_date.year, event_date.month, event_date.day, int(peak_time_str[:2]), int(peak_time_str[2:]))
+                # Find date/time and class based on common patterns
+                date_part = parts[0]
+                if len(date_part) >= 7: # Format like 31777150101
+                    yy, ddd = int(date_part[5:7]), int(date_part[7:10])
+                else: # Sometimes year is implied
+                    yy, ddd = int(parts[0]), int(parts[1])
+
+                peak_time_str = parts[3] # Usually the 4th element
                 
-                match = classification_pattern.search(line[27:])
-                if match:
-                    classification = match.group(1).replace(' ', '').strip()
-                    if classification and classification[0] in "ABCMX":
-                        flare_events.append({"datetime": peak_dt, "class": classification})
-            except Exception:
+                event_date = datetime(file_year, 1, 1) + timedelta(days=ddd - 1)
+                peak_dt = datetime(event_date.year, event_date.month, event_date.day, int(peak_time_str[0:2]), int(peak_time_str[2:4]))
+
+                # Find the flare class, which is usually the first single letter after the time info
+                flare_class = ""
+                for part in parts[4:]:
+                    if re.match(r'^[ABCMX]\d*\.?\d*$', part):
+                        flare_class = part
+                        break
+                
+                if flare_class:
+                    flare_events.append({"datetime": peak_dt, "class": flare_class})
+            except (ValueError, IndexError):
+                if verbose: print(f"[WARN] Skipping malformed line in {fname}: {line}")
                 continue
     return pd.DataFrame(flare_events)
 
-def load_noaa_all(verbose=False):
-    all_txt_files = sorted(glob.glob(os.path.join(NOAA_DIR, "*.txt")))
+def load_noaa_all(noaa_dir, verbose=False):
+    all_txt_files = sorted(glob.glob(os.path.join(noaa_dir, "*.txt")))
     if not all_txt_files: return pd.DataFrame(columns=["datetime", "class"])
     
-    dfs = [parse_standard_noaa_txt(fpath, verbose) for fpath in all_txt_files if not any(s in fpath.lower() for s in ["input-ytd", "seldads", "modified"])]
+    dfs = [parse_noaa_txt_robust(f, verbose) for f in all_txt_files if not any(s in f.lower() for s in ["input-ytd", "seldads", "modified"])]
     
-    if not dfs: return pd.DataFrame(columns=["datetime", "class"])
+    if not any(not df.empty for df in dfs): return pd.DataFrame(columns=["datetime", "class"])
     
-    return pd.concat(dfs).drop_duplicates().sort_values("datetime")
+    return pd.concat(dfs, ignore_index=True)
 
-def load_hek_csv():
-    if not os.path.exists(HEK_FILE): return pd.DataFrame(columns=["datetime", "class"])
-    df = pd.read_csv(HEK_FILE)
-    if "event_peaktime" not in df.columns or "fl_goescls" not in df.columns: return pd.DataFrame(columns=["datetime", "class"])
+def load_hek_csv(hek_file):
+    if not os.path.exists(hek_file): return pd.DataFrame(columns=["datetime", "class"])
+    df = pd.read_csv(hek_file)
+    # FIX: Use the correct column names from the upstream script
+    if "event_peaktime" not in df.columns or "fl_goescls" not in df.columns:
+        print("[ERROR] HEK file missing 'event_peaktime' or 'fl_goescls'.")
+        return pd.DataFrame(columns=["datetime", "class"])
     
     df = df.rename(columns={"event_peaktime": "datetime", "fl_goescls": "class"})
     df["datetime"] = pd.to_datetime(df["datetime"])
-    return df[["datetime", "class"]]
+    return df[["datetime", "class"]].dropna()
 
-def main(verbose=False):
+def main(root_dir, verbose=False):
+    NOAA_DIR = os.path.join(root_dir, "data/raw/flare_catalogue/")
+    HEK_FILE = os.path.join(NOAA_DIR, "goes_flare_catalogue_fido_hek.csv")
+    OUTPUT_PATH = os.path.join(root_dir, "data/interim/flare_catalogue_combined.parquet")
+
     print("Loading NOAA .txt flare data...")
-    noaa_df = load_noaa_all(verbose)
+    noaa_df = load_noaa_all(NOAA_DIR, verbose)
     print(f"[✓] NOAA flare events loaded: {len(noaa_df)}")
 
     print("Loading HEK flare data...")
-    hek_df = load_hek_csv()
+    hek_df = load_hek_csv(HEK_FILE)
     print(f"[✓] HEK flare events loaded: {len(hek_df)}")
 
     if noaa_df.empty and hek_df.empty:
@@ -82,32 +89,23 @@ def main(verbose=False):
         return
 
     combined_df = pd.concat([noaa_df, hek_df], ignore_index=True)
-    
-    # ==============================================================================
-    # 🚀 NEW: BEST PRACTICE FOR DE-DUPLICATION
-    # ==============================================================================
     print(f"Initial combined count: {len(combined_df)}")
     
-    # 1. Create a rank based on flare intensity (X=4, M=3, C=2, B/A=1)
     flare_map = {'X': 4, 'M': 3, 'C': 2, 'B': 1, 'A': 1}
     combined_df['rank'] = combined_df['class'].str[0].map(flare_map).fillna(0)
-    
-    # 2. Sort by time, then by the most intense flare first
     combined_df = combined_df.sort_values(by=['datetime', 'rank'], ascending=[True, False])
-    
-    # 3. Drop duplicates based on the timestamp, keeping the first entry (which is the strongest flare)
     deduplicated_df = combined_df.drop_duplicates(subset=['datetime'], keep='first')
     
     print(f"Deduplicated count: {len(deduplicated_df)}")
-    # ==============================================================================
-
+    
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    # Save the clean, de-duplicated dataframe without the temporary rank column
     deduplicated_df[['datetime', 'class']].to_parquet(OUTPUT_PATH, index=False)
     print(f"[✓] Combined and deduplicated flare catalogue saved: {OUTPUT_PATH}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Combine NOAA and HEK solar flare catalogues.")
-    parser.add_argument("--verbose", action="store_true", help="Print debug info")
+    parser.add_argument("--root_dir", type=str, required=True, help="Root directory of the project.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
-    main(verbose=args.verbose)
+    main(args.root_dir, verbose=args.verbose)
