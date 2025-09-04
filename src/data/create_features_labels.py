@@ -50,14 +50,18 @@ def main(root_dir):
     flux_df["label"] = labels.astype(int)
 
     # --- 4. Save Final DataFrame ---
-    os.makedirs(CONFIG["output_dir"], exist_ok=True)
     output_path = os.path.join(CONFIG["output_dir"], "features_labels.parquet")
-    flux_df.to_parquet(output_path)
+    os.makedirs(CONFIG["output_dir"], exist_ok=True)
+    
+    # --- THIS IS THE FIX ---
+    # Use reset_index() BEFORE saving to convert the 'time' index into a column.
+    flux_df.reset_index(inplace=True)
+    flux_df.rename(columns={'index': 'time'}, inplace=True)
+    # -----------------------
+    
+    flux_df.to_parquet(output_path, index=False)
     
     print(f"\n[✓] Features and labels saved: {output_path} ({len(flux_df)} rows)")
-    print("\nClass distribution:")
-    print(flux_df["label"].value_counts(normalize=True).round(4))
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create features and labels for modeling.")
